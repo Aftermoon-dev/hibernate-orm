@@ -5,26 +5,24 @@
 package org.hibernate.orm.test.envers.integration.query;
 
 import jakarta.persistence.Entity;
-import jakarta.persistence.EntityManager;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
-import jakarta.persistence.Table;
-import org.hibernate.envers.AuditReader;
+import org.hibernate.envers.AuditReaderFactory;
 import org.hibernate.envers.Audited;
 import org.hibernate.envers.RelationTargetAuditMode;
-import org.hibernate.orm.test.envers.BaseEnversJPAFunctionalTestCase;
-import org.hibernate.orm.test.envers.Priority;
+import org.hibernate.testing.envers.junit.EnversTest;
+import org.hibernate.testing.orm.junit.BeforeClassTemplate;
+import org.hibernate.testing.orm.junit.EntityManagerFactoryScope;
 import org.hibernate.testing.orm.junit.JiraKey;
-import org.junit.Test;
+import org.hibernate.testing.orm.junit.Jpa;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Tests that {@link RelationTargetAuditMode#NOT_AUDITED} works correctly when loading audit history.
@@ -35,17 +33,20 @@ import static org.junit.Assert.assertNotNull;
  * @author Minjae Seon
  */
 @JiraKey(value = "HHH-19861")
-public class RelationTargetNotAuditedTest extends BaseEnversJPAFunctionalTestCase {
-
+@Jpa(annotatedClasses = {
+		RelationTargetNotAuditedTest.Parent.class,
+		RelationTargetNotAuditedTest.Child.class
+})
+@EnversTest
+public class RelationTargetNotAuditedTest {
 	private Long childId;
 	private Long parentId;
 
 	@Entity(name = "Child")
-	@Table(name = "Child")
 	@Audited
 	public static class Child {
 		@Id
-		@GeneratedValue(strategy = GenerationType.AUTO)
+		@GeneratedValue
 		private Long id;
 
 		private String name;
@@ -75,17 +76,15 @@ public class RelationTargetNotAuditedTest extends BaseEnversJPAFunctionalTestCas
 	}
 
 	@Entity(name = "Parent")
-	@Table(name = "Parent")
 	@Audited
 	public static class Parent {
 		@Id
-		@GeneratedValue(strategy = GenerationType.AUTO)
+		@GeneratedValue
 		private Long id;
 
 		private String content;
 
 		@ManyToOne(fetch = FetchType.LAZY)
-		@JoinColumn(name = "child_id", nullable = false)
 		@Audited(targetAuditMode = RelationTargetAuditMode.NOT_AUDITED)
 		private Child child;
 
@@ -122,81 +121,79 @@ public class RelationTargetNotAuditedTest extends BaseEnversJPAFunctionalTestCas
 		}
 	}
 
-	@Override
-	protected Class<?>[] getAnnotatedClasses() {
-		return new Class<?>[]{ Parent.class, Child.class };
-	}
-
-	@Test
-	@Priority(10)
-	public void initData() {
-		EntityManager em = getEntityManager();
-
+	@BeforeClassTemplate
+	public void initData(EntityManagerFactoryScope scope) {
 		// Revision 1: Create child and parent
-		em.getTransaction().begin();
-		Child child = new Child("Child 1");
-		em.persist(child);
-		Parent parent = new Parent("Initial content", child);
-		em.persist(parent);
-		em.getTransaction().commit();
+		scope.inTransaction( em -> {
+			final Child child = new Child( "Child 1" );
+			em.persist( child );
 
-		childId = child.getId();
-		parentId = parent.getId();
+			final Parent parent = new Parent( "Initial content", child );
+			em.persist( parent );
+
+
+			this.childId = child.getId();
+			this.parentId = parent.getId();
+		});
 
 		// Revision 2: Update parent content
-		em.getTransaction().begin();
-		parent = em.find(Parent.class, parentId);
-		parent.setContent("Updated content");
-		em.getTransaction().commit();
+		scope.inTransaction( em -> {
+			final Parent parent = em.find( Parent.class, this.parentId );
+			parent.setContent( "Updated content" );
+		});
 
 		// Revision 3: Update child name (should not create audit record for parent)
-		em.getTransaction().begin();
-		child = em.find(Child.class, childId);
-		child.setName("Child 1 Updated");
-		em.getTransaction().commit();
+		scope.inTransaction( em -> {
+			final Child child = em.find( Child.class, this.childId );
+			child.setName( "Child 1 Updated" );
+		});
 	}
 
 	@Test
-	public void testLoadParentAtRevision1() {
-		AuditReader auditReader = getAuditReader();
-		Parent parentRev1 = auditReader.find(Parent.class, parentId, 1);
+	public void testLoadParentAtRevision1(EntityManagerFactoryScope scope) {
+		scope.inEntityManager( em -> {
+			final Parent parent = AuditReaderFactory.get( em ).find( Parent.class, this.parentId, 1 );
 
-		assertNotNull("Parent at revision 1 should not be null", parentRev1);
-		assertEquals("Initial content", parentRev1.getContent());
-		assertNotNull("Child reference should not be null", parentRev1.getChild());
-		assertEquals(childId, parentRev1.getChild().getId());
-		// Child should be loaded from current table, so it should have the updated name
-		assertEquals("Child 1 Updated", parentRev1.getChild().getName());
+			assertNotNull( parent );
+			assertEquals( "Initial content", parent.getContent() );
+			assertNotNull( parent.getChild() );
+			assertEquals( this.childId, parent.getChild().getId() );
+			// Child should be loaded from current table, so it should have the updated name
+			assertEquals( "Child 1 Updated", parent.getChild().getName() );
+		});
 	}
 
 	@Test
-	public void testLoadParentAtRevision2() {
-		AuditReader auditReader = getAuditReader();
-		Parent parentRev2 = auditReader.find(Parent.class, parentId, 2);
+	public void testLoadParentAtRevision2(EntityManagerFactoryScope scope) {
+		scope.inEntityManager( em -> {
+			final Parent parent = AuditReaderFactory.get( em ).find( Parent.class, this.parentId, 2 );
 
-		assertNotNull("Parent at revision 2 should not be null", parentRev2);
-		assertEquals("Updated content", parentRev2.getContent());
-		assertNotNull("Child reference should not be null", parentRev2.getChild());
-		assertEquals(childId, parentRev2.getChild().getId());
-		// Child should be loaded from current table
-		assertEquals("Child 1 Updated", parentRev2.getChild().getName());
+			assertNotNull( parent );
+			assertEquals( "Updated content", parent.getContent() );
+			assertNotNull( parent.getChild() );
+			assertEquals( childId, parent.getChild().getId() );
+			// Child should be loaded from current table
+			assertEquals( "Child 1 Updated", parent.getChild().getName() );
+		});
 	}
 
 	@Test
-	public void testQueryParentRevisions() {
-		AuditReader auditReader = getAuditReader();
-		List<Number> revisions = auditReader.getRevisions(Parent.class, parentId);
+	public void testQueryParentRevisions(EntityManagerFactoryScope scope) {
+		scope.inEntityManager( em -> {
+			final List<Number> revisions = AuditReaderFactory.get( em ).getRevisions( Parent.class, this.parentId );
 
-		// Parent should have 2 revisions (creation and update)
-		assertEquals("Parent should have 2 revisions", 2, revisions.size());
+			// Parent should have 2 revisions (creation and update)
+			assertEquals( 2, revisions.size() );
+		});
 	}
 
 	@Test
-	public void testQueryChildRevisions() {
-		AuditReader auditReader = getAuditReader();
-		List<Number> revisions = auditReader.getRevisions(Child.class, childId);
+	public void testQueryChildRevisions(EntityManagerFactoryScope scope) {
+		scope.inEntityManager( em -> {
+			final List<Number> revisions = AuditReaderFactory.get( em ).getRevisions( Child.class, this.childId );
 
-		// Child should have 2 revisions (creation and update)
-		assertEquals("Child should have 2 revisions", 2, revisions.size());
+			// Child should have 2 revisions (creation and update)
+			assertEquals( 2, revisions.size() );
+		});
 	}
 }
